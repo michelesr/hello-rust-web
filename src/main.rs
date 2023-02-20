@@ -19,10 +19,18 @@ use std::{
 fn main() -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
 
+    // wrap the thread pool in a mutex and reference counting so that it can be shared safely with
+    // the signal handler running in a dedicated thread
     let pool = Arc::new(Mutex::new(ThreadPool::new(5)));
     let pool_clone = Arc::clone(&pool);
 
+    // signals to handle
     let mut signals = Signals::new(&[SIGTERM, SIGINT])?;
+
+    // use a dedicated thread: the iterator from listener.incoming() blocks when waiting for
+    // connections, and could wait forever if no new connections are established: using a dedicated
+    // thread the worker threads in the pool can be shut and the program can terminate even if the
+    // main thread is blocked
     thread::spawn(move || {
         signals.forever().next();
         println!("caught signal");

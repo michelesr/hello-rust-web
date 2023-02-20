@@ -5,6 +5,8 @@ use std::{
 
 pub struct ThreadPool {
     workers: Vec<Worker>,
+    // channel are used to send jobs to the workers: each worker can receive messages sent from
+    // this sender
     sender: Option<mpsc::Sender<Job>>,
 }
 
@@ -17,6 +19,8 @@ struct Worker {
 
 impl Worker {
     pub fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
+        // the thread will pull jobs from the channel and process them: when the sender is
+        // dropped, recv() will fail and so the loop will be broken and the thread will exit
         let thread = thread::spawn(move || loop {
             let job = receiver.lock().unwrap().recv();
             match job {
@@ -48,8 +52,10 @@ impl ThreadPool {
 
         let (sender, receiver) = mpsc::channel();
         let sender = Some(sender);
+        // put the receiver behind a lock so that one worker at a time can pull messages from it 
         let receiver = Arc::new(Mutex::new(receiver));
 
+        // preallocate the capacity for the vector to avoid resizing
         let mut workers = Vec::with_capacity(size);
         for id in 0..size {
             workers.push(Worker::new(id, Arc::clone(&receiver)))
@@ -63,6 +69,7 @@ impl ThreadPool {
         T: FnOnce() + Send + 'static,
     {
         let job = Box::new(f);
+        // send the job in the channel so that it can be processed by workers
         self.sender.as_ref().unwrap().send(job).unwrap();
     }
 
