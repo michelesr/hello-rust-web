@@ -4,8 +4,10 @@ use signal_hook::{
 };
 use std::{
     error::Error,
-    process::exit,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 use web::ThreadPool;
 
@@ -17,33 +19,39 @@ use std::{
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
+    const ENDPOINT: &str = "127.0.0.1:8080";
+    let listener = TcpListener::bind(ENDPOINT).unwrap();
 
-    // wrap the thread pool in a mutex and reference counting so that it can be shared safely with
-    // the signal handler running in a dedicated thread
-    let pool = Arc::new(Mutex::new(ThreadPool::new(5)));
-    let pool_clone = Arc::clone(&pool);
+    let pool = ThreadPool::new(5);
+
+    // atomic boolean used to stop the main loop
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_me = Arc::clone(&stop);
 
     // signals to handle
     let mut signals = Signals::new(&[SIGTERM, SIGINT])?;
 
-    // use a dedicated thread: the iterator from listener.incoming() blocks when waiting for
-    // connections, and could wait forever if no new connections are established: using a dedicated
-    // thread the worker threads in the pool can be shut and the program can terminate even if the
-    // main thread is blocked
+    // listener.incoming() blocks when waiting for connections: signals are handled in a dedicated
+    // thread that sets the stop flag to true to break the loop that handles incoming requests
+    //
+    // https://rust-cli.github.io/book/in-depth/signals.html
     thread::spawn(move || {
+        // only the first signal is needed from the iterator
         signals.forever().next();
-        println!("caught signal");
-        pool_clone.lock().unwrap().stop();
-        exit(0);
+        // set flag to break the main loop
+        stop.store(true, Ordering::Relaxed);
+        // signal the listener by opening a new connection
+        TcpStream::connect(ENDPOINT).unwrap();
     });
 
     for stream in listener.incoming() {
+        if stop_me.load(Ordering::Relaxed) {
+            break;
+        }
         let stream = stream.unwrap();
-        pool.lock().unwrap().execute(|| handle_stream(stream));
+        pool.execute(|| handle_stream(stream));
     }
 
-    pool.lock().unwrap().stop();
     Ok(())
 }
 
